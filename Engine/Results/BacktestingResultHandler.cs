@@ -56,8 +56,9 @@ namespace QuantConnect.Lean.Engine.Results
         private readonly object _runtimeLock = new object();
         private readonly Dictionary<string, string> _runtimeStatistics = new Dictionary<string, string>();
         private double _daysProcessed;
-        private double _lastDaysProcessed = 1;
+        private double _daysProcessedFrontier;
         private bool _processingFinalPacket;
+        private readonly HashSet<string> _chartSeriesExceededDataPoints = new HashSet<string>();
 
         //Processing Time:
         private readonly DateTime _startTime = DateTime.UtcNow;
@@ -148,9 +149,6 @@ namespace QuantConnect.Lean.Engine.Results
         /// </summary>
         public void Run()
         {
-            //Initialize:
-            _lastDaysProcessed = 5;
-
             //Setup minimum result arrays:
             //SampleEquity(job.periodStart, job.startingCapital);
             //SamplePerformance(job.periodStart, 0);
@@ -208,7 +206,7 @@ namespace QuantConnect.Lean.Engine.Results
                     return;
                 }
 
-                if (DateTime.UtcNow <= _nextUpdate || !(_daysProcessed > (_lastDaysProcessed + 1))) return;
+                if (DateTime.UtcNow <= _nextUpdate || _daysProcessed < _daysProcessedFrontier) return;
 
                 //Extract the orders since last update
                 var deltaOrders = new Dictionary<int, Order>();
@@ -231,7 +229,7 @@ namespace QuantConnect.Lean.Engine.Results
                 try
                 {
                     _lastUpdate = Algorithm.UtcTime.Date;
-                    _lastDaysProcessed = _daysProcessed;
+                    _daysProcessedFrontier = _daysProcessed + 1;
                     _nextUpdate = DateTime.UtcNow.AddSeconds(2);
                 }
                 catch (Exception err)
@@ -279,7 +277,6 @@ namespace QuantConnect.Lean.Engine.Results
                     var orderCount = _transactionHandler.Orders.Count;
 
                     var completeResult = new BacktestResult(
-                        Algorithm.IsFrameworkAlgorithm,
                         Charts,
                         orderCount > maxOrders ? _transactionHandler.Orders.Skip(orderCount - maxOrders).ToDictionary() : _transactionHandler.Orders.ToDictionary(),
                         Algorithm.Transactions.TransactionRecord,
@@ -316,11 +313,10 @@ namespace QuantConnect.Lean.Engine.Results
             foreach (var chart in deltaCharts.Values)
             {
                 //Don't add packet if the series is empty:
-                if (chart.Series.Values.Sum(x => x.Values.Count) == 0) continue;
+                if (chart.Series.Values.Aggregate(0, (i, x) => i + x.Values.Count) == 0) continue;
 
                 splitPackets.Add(new BacktestResultPacket(_job, new BacktestResult
                 {
-                    IsFrameworkAlgorithm = Algorithm.IsFrameworkAlgorithm,
                     Charts = new Dictionary<string, Chart>()
                     {
                         {chart.Name, chart}
@@ -329,13 +325,13 @@ namespace QuantConnect.Lean.Engine.Results
             }
 
             // Send alpha run time statistics
-            splitPackets.Add(new BacktestResultPacket(_job, new BacktestResult {IsFrameworkAlgorithm = Algorithm.IsFrameworkAlgorithm, AlphaRuntimeStatistics = AlphaRuntimeStatistics}, progress));
+            splitPackets.Add(new BacktestResultPacket(_job, new BacktestResult { AlphaRuntimeStatistics = AlphaRuntimeStatistics}, progress));
 
             // Add the orders into the charting packet:
-            splitPackets.Add(new BacktestResultPacket(_job, new BacktestResult { IsFrameworkAlgorithm = Algorithm.IsFrameworkAlgorithm, Orders = deltaOrders }, progress));
+            splitPackets.Add(new BacktestResultPacket(_job, new BacktestResult { Orders = deltaOrders }, progress));
 
             //Add any user runtime statistics into the backtest.
-            splitPackets.Add(new BacktestResultPacket(_job, new BacktestResult { IsFrameworkAlgorithm = Algorithm.IsFrameworkAlgorithm, RuntimeStatistics = runtimeStatistics }, progress));
+            splitPackets.Add(new BacktestResultPacket(_job, new BacktestResult { RuntimeStatistics = runtimeStatistics }, progress));
 
             return splitPackets;
         }
@@ -365,7 +361,6 @@ namespace QuantConnect.Lean.Engine.Results
                     lock (_chartLock)
                     {
                         results = new BacktestResult(
-                            result.Results.IsFrameworkAlgorithm,
                             result.Results.Charts.ToDictionary(x => x.Key, x => x.Value.Clone()),
                             result.Results.Orders,
                             result.Results.ProfitLoss,
@@ -419,7 +414,7 @@ namespace QuantConnect.Lean.Engine.Results
 
                 //Create a result packet to send to the browser.
                 var result = new BacktestResultPacket((BacktestNodePacket) job,
-                    new BacktestResult(Algorithm.IsFrameworkAlgorithm, charts, orders, profitLoss, statisticsResults.Summary, banner, statisticsResults.RollingPerformances, statisticsResults.TotalPerformance)
+                    new BacktestResult(charts, orders, profitLoss, statisticsResults.Summary, banner, statisticsResults.RollingPerformances, statisticsResults.TotalPerformance)
                         { AlphaRuntimeStatistics = AlphaRuntimeStatistics })
                 {
                     ProcessingTime = (DateTime.UtcNow - _startTime).TotalSeconds,
@@ -688,8 +683,9 @@ namespace QuantConnect.Lean.Engine.Results
                                     //We already have this record, so just the new samples to the end:
                                     values.AddRange(series.Values);
                                 }
-                                else
+                                else if(!_chartSeriesExceededDataPoints.Contains(chart.Name + series.Name))
                                 {
+                                    _chartSeriesExceededDataPoints.Add(chart.Name + series.Name);
                                     DebugMessage($"Exceeded maximum data points per series, chart update skipped. Chart Name {update.Name}. Series name {series.Name}. " +
                                                  $"Limit is currently set at {_job.Controls.MaximumDataPointsPerChartSeries}");
                                 }

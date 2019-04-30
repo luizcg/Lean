@@ -99,6 +99,12 @@ namespace QuantConnect.Lean.Engine.TransactionHandlers
         private readonly object _lockHandleOrderEvent = new object();
 
         /// <summary>
+        /// Event fired when there is a new <see cref="QuantConnect.Orders.OrderEvent"/>
+        /// </summary>
+        /// <remarks>Will be called before the <see cref="SecurityPortfolioManager"/></remarks>
+        public event EventHandler<OrderEvent> NewOrderEvent;
+
+        /// <summary>
         /// Gets the permanent storage for all orders
         /// </summary>
         public ConcurrentDictionary<int, Order> Orders
@@ -1076,8 +1082,10 @@ namespace QuantConnect.Lean.Engine.TransactionHandlers
 
                     try
                     {
-                        _algorithm.Portfolio.ProcessFill(fill);
+                        // to be called before updating the Portfolio
+                        NewOrderEvent?.Invoke(this, fill);
 
+                        _algorithm.Portfolio.ProcessFill(fill);
                         _algorithm.TradeBuilder.ProcessFill(
                             fill,
                             securityConversionRate,

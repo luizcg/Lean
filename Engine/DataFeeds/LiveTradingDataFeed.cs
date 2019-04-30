@@ -257,7 +257,7 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                         case TickType.Trade:
                         default:
                             var tradeBarAggregator = new TradeBarBuilderEnumerator(request.Configuration.Increment, request.Security.Exchange.TimeZone, _timeProvider);
-                            var auxDataEnumerator = new EnqueueableEnumerator<BaseData>();
+                            var auxDataEnumerator = new LiveAuxiliaryDataEnumerator(request.Security.Exchange.TimeZone, _timeProvider);
 
                             _exchange.AddDataHandler(request.Configuration.Symbol, data =>
                             {
@@ -282,7 +282,7 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                             });
 
                             enumerator = request.Configuration.SecurityType == SecurityType.Equity
-                                ? (IEnumerator<BaseData>) new LiveBaseDataSynchronizingEnumerator(_frontierTimeProvider, request.Security.Exchange.TimeZone, auxDataEnumerator, tradeBarAggregator)
+                                ? (IEnumerator<BaseData>) new LiveEquityDataSynchronizingEnumerator(_frontierTimeProvider, request.Security.Exchange.TimeZone, auxDataEnumerator, tradeBarAggregator)
                                 : tradeBarAggregator;
                             break;
 
@@ -404,12 +404,17 @@ namespace QuantConnect.Lean.Engine.DataFeeds
             {
                 Log.Trace("LiveTradingDataFeed.CreateUniverseSubscription(): Creating coarse universe: " + config.Symbol.ToString());
 
+                // we subscribe using a normalized symbol, without a random GUID,
+                // since the ticker plant will send the coarse data using this symbol
+                var normalizedSymbol = CoarseFundamental.CreateUniverseSymbol(config.Symbol.ID.Market, false);
+
                 // since we're binding to the data queue exchange we'll need to let him
                 // know that we expect this data
-                _dataQueueHandler.Subscribe(_job, new[] {request.Security.Symbol});
+                _dataQueueHandler.Subscribe(_job, new[] { normalizedSymbol });
 
                 var enqueable = new EnqueueableEnumerator<BaseData>();
-                _exchange.SetDataHandler(config.Symbol, data =>
+                // We `AddDataHandler` not `Set` so we can have multiple handlers for the coarse data
+                _exchange.AddDataHandler(normalizedSymbol, data =>
                 {
                     enqueable.Enqueue(data);
                 });
